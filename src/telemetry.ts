@@ -88,10 +88,11 @@ export function startTelemetryLoop(
 
   // Download complete/failed hook
   const onComplete = (task: DownloadTask, status: "complete" | "failed", error?: string) => {
+    const filename = task.destPath.split("/").pop() ?? task.destPath;
     if (status === "complete") {
-      send("download:complete", { task_id: task.taskId });
+      send("download:complete", { task_id: task.taskId, filename });
     } else {
-      send("download:failed", { task_id: task.taskId, error });
+      send("download:failed", { task_id: task.taskId, filename, error });
     }
   };
 

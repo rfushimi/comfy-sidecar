@@ -98,14 +98,20 @@ app.get(
 );
 
 app.get("/health", async (c) => {
+  let comfyui: "reachable" | "unreachable" = "unreachable";
+  let systemStats: unknown = null;
   try {
-    const res = await fetch(`${COMFYUI_URL}/system_stats`);
-    const stats = await res.json();
-    return c.json({ status: "ok", comfyui: stats });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return c.json({ status: "error", error: message }, 502);
+    const res = await fetch(`${COMFYUI_URL}/system_stats`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.ok) {
+      comfyui = "reachable";
+      systemStats = await res.json();
+    }
+  } catch {
+    // ComfyUI not running — sidecar itself is fine
   }
+  return c.json({ status: "ok", comfyui, system_stats: systemStats });
 });
 
 if (process.env.NODE_ENV !== "test") {
