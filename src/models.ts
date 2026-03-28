@@ -1,5 +1,5 @@
 import { readdir, unlink, access } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const MODEL_EXTENSIONS = new Set([
   ".safetensors",
@@ -55,7 +55,10 @@ export async function deleteModel(
     return { ok: false, error: `Unknown model type: ${type}`, status: 400 };
   }
 
-  const filePath = join(modelsDir, subdir, file);
+  const filePath = resolve(modelsDir, subdir, file);
+  if (!filePath.startsWith(resolve(modelsDir))) {
+    return { ok: false, error: "Invalid path", status: 400 };
+  }
   try {
     await access(filePath);
     await unlink(filePath);

@@ -1,6 +1,5 @@
-import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
-import { Writable } from "node:stream";
 import { createWriteStream } from "node:fs";
 
 export interface DownloadTask {
@@ -130,21 +129,38 @@ export class DownloadQueue {
       throw new Error("No response body");
     }
 
-    // Stream response to tmp file
-    const chunks: Buffer[] = [];
+    // Stream response directly to disk via tmp file
     let bytesReceived = 0;
+    const fileStream = createWriteStream(tmpPath);
 
-    for await (const chunk of res.body as AsyncIterable<Uint8Array>) {
-      chunks.push(Buffer.from(chunk));
-      bytesReceived += chunk.byteLength;
-      if (this.activeInfo) {
-        this.activeInfo.bytes = bytesReceived;
+    try {
+      for await (const chunk of res.body as AsyncIterable<Uint8Array>) {
+        const buf = Buffer.from(chunk);
+        const canContinue = fileStream.write(buf);
+        bytesReceived += chunk.byteLength;
+        if (this.activeInfo) {
+          this.activeInfo.bytes = bytesReceived;
+        }
+        this.onProgress?.(task, bytesReceived, total);
+        // Respect backpressure
+        if (!canContinue) {
+          await new Promise<void>((resolve) => fileStream.once("drain", resolve));
+        }
       }
-      this.onProgress?.(task, bytesReceived, total);
+
+      // Wait for the file stream to finish
+      await new Promise<void>((resolve, reject) => {
+        fileStream.end(() => resolve());
+        fileStream.on("error", reject);
+      });
+    } catch (err) {
+      fileStream.destroy();
+      // Clean up tmp file on error
+      await unlink(tmpPath).catch(() => {});
+      throw err;
     }
 
-    // Write to tmp file then atomic rename
-    await writeFile(tmpPath, Buffer.concat(chunks));
+    // Atomic rename
     await rename(tmpPath, task.destPath);
   }
 
