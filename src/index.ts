@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
+import { createProxyRoutes } from "./comfyui-proxy.js";
 
 export const COMFYUI_URL =
   process.env.COMFYUI_URL || "http://127.0.0.1:8188";
@@ -7,6 +8,8 @@ export const COMFYUI_URL =
 const PORT = Number(process.env.PORT) || 19090;
 
 export const app = new Hono();
+
+app.route("/", createProxyRoutes());
 
 app.get("/health", async (c) => {
   try {
