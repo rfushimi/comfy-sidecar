@@ -1,10 +1,16 @@
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
+import { createNodeWebSocket } from "@hono/node-ws";
 import { createProxyRoutes } from "./comfyui-proxy.js";
 import { scanModels, deleteModel } from "./models.js";
 import { DownloadQueue } from "./download.js";
-import { join } from "node:path";
+import { startTelemetryLoop } from "./telemetry.js";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { checkAndUpdate } from "./updater.js";
+
+const REPO_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const COMFYUI_URL =
   process.env.COMFYUI_URL || "http://127.0.0.1:8188";
@@ -14,6 +20,8 @@ const getModelsDir = () =>
   process.env.COMFYUI_MODELS_DIR || "/opt/ComfyUI/models";
 
 export const app = new Hono();
+
+const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
 
 app.route("/", createProxyRoutes());
 
@@ -63,6 +71,32 @@ app.get("/models/downloads", (c) => {
   return c.json(downloadQueue.getStatus());
 });
 
+app.post("/admin/update", async (c) => {
+  try {
+    const result = await checkAndUpdate(REPO_DIR);
+    return c.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return c.json({ error: message }, 500);
+  }
+});
+
+app.get(
+  "/ws/telemetry",
+  upgradeWebSocket(() => {
+    let cleanup: (() => void) | null = null;
+    return {
+      onOpen(_evt, ws) {
+        cleanup = startTelemetryLoop(ws.raw!, COMFYUI_URL, downloadQueue);
+      },
+      onClose() {
+        cleanup?.();
+        cleanup = null;
+      },
+    };
+  }),
+);
+
 app.get("/health", async (c) => {
   try {
     const res = await fetch(`${COMFYUI_URL}/system_stats`);
@@ -75,8 +109,9 @@ app.get("/health", async (c) => {
 });
 
 if (process.env.NODE_ENV !== "test") {
-  serve({ fetch: app.fetch, port: PORT }, (info) => {
+  const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
     console.log(`comfy-sidecar listening on :${info.port}`);
     console.log(`ComfyUI upstream: ${COMFYUI_URL}`);
   });
+  injectWebSocket(server);
 }
