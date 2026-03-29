@@ -37,7 +37,9 @@ export class DownloadQueue {
   private queue: DownloadTask[] = [];
   private processing = false;
   private activeInfo: ActiveInfo | null = null;
+  private _activeDest: string | null = null;
   private completedIds: string[] = [];
+  private completedDests = new Set<string>();
   private failedList: FailedInfo[] = [];
   private retryDelays: number[];
 
@@ -49,6 +51,15 @@ export class DownloadQueue {
   }
 
   enqueue(task: DownloadTask): void {
+    // Deduplicate by destPath — skip if already queued, active, or completed
+    const dest = task.destPath;
+    if (
+      this.completedDests.has(dest) ||
+      this._activeDest === dest ||
+      this.queue.some((t) => t.destPath === dest)
+    ) {
+      return; // silently skip duplicate
+    }
     this.queue.push(task);
     this.processNext();
   }
@@ -68,17 +79,21 @@ export class DownloadQueue {
     if (!task) return;
 
     this.processing = true;
+    this._activeDest = task.destPath;
     this.activeInfo = { taskId: task.taskId, bytes: 0, total: 0 };
 
     try {
       await this.downloadWithRetry(task);
       this.completedIds.push(task.taskId);
+      this.completedDests.add(task.destPath);
       this.activeInfo = null;
+      this._activeDest = null;
       this.onComplete?.(task, "complete");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.failedList.push({ taskId: task.taskId, error: message });
       this.activeInfo = null;
+      this._activeDest = null;
       this.onComplete?.(task, "failed", message);
     }
 
