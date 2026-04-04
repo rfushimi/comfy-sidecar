@@ -1,6 +1,6 @@
 import { mkdir, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, existsSync, readFileSync, writeFileSync } from "node:fs";
 
 export interface DownloadTask {
   url: string;
@@ -29,6 +29,7 @@ interface DownloadStatus {
 
 interface DownloadQueueOptions {
   retryDelays?: number[];
+  persistPath?: string;
 }
 
 const DEFAULT_RETRY_DELAYS = [5000, 30000, 120000];
@@ -42,12 +43,15 @@ export class DownloadQueue {
   private completedDests = new Set<string>();
   private failedList: FailedInfo[] = [];
   private retryDelays: number[];
+  private persistPath: string | null;
 
   onComplete: ((task: DownloadTask, status: "complete" | "failed", error?: string) => void) | null = null;
   onProgress: ((task: DownloadTask, bytes: number, total: number) => void) | null = null;
 
   constructor(options?: DownloadQueueOptions) {
     this.retryDelays = options?.retryDelays ?? DEFAULT_RETRY_DELAYS;
+    this.persistPath = options?.persistPath ?? null;
+    this.loadPersisted();
   }
 
   enqueue(task: DownloadTask): void {
@@ -61,6 +65,7 @@ export class DownloadQueue {
       return; // silently skip duplicate
     }
     this.queue.push(task);
+    this.persist();
     this.processNext();
   }
 
@@ -78,6 +83,7 @@ export class DownloadQueue {
     const task = this.queue.shift();
     if (!task) return;
 
+    this.persist();
     this.processing = true;
     this._activeDest = task.destPath;
     this.activeInfo = { taskId: task.taskId, bytes: 0, total: 0 };
@@ -126,6 +132,9 @@ export class DownloadQueue {
   }
 
   private async downloadFile(task: DownloadTask): Promise<void> {
+    // Skip if already downloaded (e.g. completed before restart)
+    if (existsSync(task.destPath)) return;
+
     const tmpPath = task.destPath + ".tmp";
 
     // Ensure parent directory exists
@@ -177,6 +186,37 @@ export class DownloadQueue {
 
     // Atomic rename
     await rename(tmpPath, task.destPath);
+  }
+
+  private persist(): void {
+    if (!this.persistPath) return;
+    try {
+      const data = this.queue.map((t) => ({
+        url: t.url,
+        destPath: t.destPath,
+        taskId: t.taskId,
+        ...(t.hash ? { hash: t.hash } : {}),
+      }));
+      writeFileSync(this.persistPath, JSON.stringify(data, null, 2));
+    } catch {
+      // Best-effort — don't crash the queue over persistence
+    }
+  }
+
+  private loadPersisted(): void {
+    if (!this.persistPath || !existsSync(this.persistPath)) return;
+    try {
+      const raw = readFileSync(this.persistPath, "utf-8");
+      const tasks: DownloadTask[] = JSON.parse(raw);
+      if (!Array.isArray(tasks)) return;
+      for (const task of tasks) {
+        if (task.url && task.destPath && task.taskId) {
+          this.enqueue(task);
+        }
+      }
+    } catch {
+      // Corrupt or unreadable file — skip silently
+    }
   }
 
   private delay(ms: number): Promise<void> {

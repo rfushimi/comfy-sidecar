@@ -52,7 +52,9 @@ const MODEL_TYPE_MAP: Record<string, string> = {
   unet: "unet",
 };
 
-export const downloadQueue = new DownloadQueue();
+export const downloadQueue = new DownloadQueue({
+  persistPath: "/tmp/comfy-sidecar-queue.json",
+});
 
 app.post("/models/download", async (c) => {
   const body = await c.req.json<{ url: string; type: string; filename: string }>();
@@ -111,7 +113,28 @@ app.get("/health", async (c) => {
   } catch {
     // ComfyUI not running — sidecar itself is fine
   }
-  return c.json({ status: "ok", comfyui, system_stats: systemStats });
+  // Disk usage for the models directory
+  let disk: { total_gb: number; free_gb: number; used_pct: number } | null = null;
+  try {
+    const { execSync } = await import("child_process");
+    const df = execSync("df -k / 2>/dev/null || df -k . 2>/dev/null", { encoding: "utf-8" });
+    const lines = df.trim().split("\n");
+    if (lines.length >= 2) {
+      const parts = lines[1].split(/\s+/);
+      const totalKB = parseInt(parts[1] || "0");
+      const usedKB = parseInt(parts[2] || "0");
+      const freeKB = parseInt(parts[3] || "0");
+      if (totalKB > 0) {
+        disk = {
+          total_gb: Math.round(totalKB / 1048576 * 10) / 10,
+          free_gb: Math.round(freeKB / 1048576 * 10) / 10,
+          used_pct: Math.round(usedKB / totalKB * 100),
+        };
+      }
+    }
+  } catch { /* ignore */ }
+
+  return c.json({ status: "ok", comfyui, system_stats: systemStats, disk });
 });
 
 if (process.env.NODE_ENV !== "test") {
